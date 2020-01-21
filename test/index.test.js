@@ -60,21 +60,23 @@ describe('service testing', () => {
 
         test('ws message should be handled', async () => {
             const ws = await wsSend(DefaultPath, reqData)
-            return new Promise(resolve => {
+            return new Promise((resolve, reject) => {
                 ws.on('message', msg => {
                     expect(msg).toEqual(JSON.stringify(reqData))
                     resolve()
                 })
+                setTimeout(reject, 2000)
             })
         })
 
         test('wss message should be handled', async () => {
-            const ws = await wssSend(DefaultPath, reqData)
-            return new Promise(resolve => {
-                ws.on('message', msg => {
+            const wss = await wssSend(DefaultPath, reqData)
+            return new Promise((resolve, reject) => {
+                wss.on('message', msg => {
                     expect(msg).toEqual(JSON.stringify(reqData))
                     resolve()
                 })
+                setTimeout(reject, 2000)
             })
         })
     })
@@ -110,11 +112,25 @@ describe('service testing', () => {
         })
 
         test('ws message should be correctly proxied', async () => {
-
+            const ws = await wsSend(DefaultPath, reqData, UseProxy)
+            return new Promise((resolve, reject) => {
+                ws.on('message', msg => {
+                    expect(msg).toEqual(JSON.stringify(reqData))
+                    resolve() 
+                })
+                setTimeout(reject, 2000)
+            })
         })
 
         test('wss message should be correctly proxied', async () => {
-
+            const wss = await wssSend(DefaultPath, reqData, UseProxy)
+            return new Promise((resolve, reject) => {
+                wss.on('message', msg => {
+                    expect(msg).toEqual(JSON.stringify(reqData))
+                    resolve()
+                })
+                setTimeout(reject, 2000)
+            })
         })
     })
 

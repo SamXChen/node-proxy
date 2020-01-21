@@ -1,3 +1,4 @@
+const url = require('url')
 const http = require('http')
 const https = require('https')
 const tls = require('tls')
@@ -7,7 +8,7 @@ const waitFor = require('event-to-promise')
 
 const proxyHandler = require('./lib/handler/proxy-handler')
 
-const TLSSocket = tls.TLSSocket
+const NetSocket = net.Socket
 
 module.exports.init = function() {
 
@@ -33,10 +34,11 @@ module.exports.init = function() {
             console.error(err)
         })
 
-        const onConnect = buildOnConnect(netSvr, tlsSvr)
-        netSvr.on(`onConnect`, onConnect)
+        const onConnect = buildOnConnect(net, tls)
+        netSvr.on(`connect`, onConnect)
+        tlsSvr.on(`connect`, onConnect)
 
-        const onUpgrade = buildOnUpgrade()
+        const onUpgrade = buildOnUpgrade(proxyHandler)
         netSvr.on(`upgrade`, onUpgrade)
         tlsSvr.on(`upgrade`, onUpgrade)
 
@@ -48,7 +50,7 @@ module.exports.init = function() {
             console.log(`server listening: ${port}`)
         })
 
-        tlsSvr.listen()
+        tlsSvr.listen(443)
         netSvr.listen(port)
     }
 
@@ -81,7 +83,7 @@ module.exports.init = function() {
         }
     }
 
-    function buildOnConnect(netSvr, tlsSvr) {
+    function buildOnConnect(net, tls) {
         return async (req, socket, head) => {
 
             try {
@@ -90,20 +92,29 @@ module.exports.init = function() {
                 if (!head || !head.length) {
                     head = await waitFor(socket, `data`)
                 }
-
-                let proxySvr = netSvr
+                
+                let defaultPort = 80
+                let protocol = `http://`
+                let proxySender = net
                 if (
                     head[0] === 0x16 ||
                     head[0] === 0x80 ||
                     head[0] === 0x00
                 ) {
-                    proxySvr = tlsSvr
+                    protocol = `https://`
+                    proxySender = net
+                    defaultPort = 443
                 }
 
-                const proxySocket = net.connect(proxySvr.address().port)
+                const { hostname, port } = url.parse(`${protocol}${req.url}`)
+                const proxySocket = proxySender.connect({
+                    hostname: hostname,
+                    port: port || defaultPort,
+                    rejectUnauthorized: false,
+                })
 
-                socket.once('error', () => proxySocket.destroy())
-                proxySocket.once('error', () => socket.destroy())
+                socket.once(`error`, () => proxySocket.destroy())
+                proxySocket.once(`error`, () => socket.destroy())
 
                 socket.pause()
 
@@ -111,8 +122,8 @@ module.exports.init = function() {
 
                 socket.resume()
 
-                proxySocket.pipe(socket)
                 proxySocket.write(head)
+                proxySocket.pipe(socket)
                 socket.pipe(proxySocket)
 
             } catch (err) {
@@ -121,43 +132,37 @@ module.exports.init = function() {
         }
     }
 
-    function buildOnUpgrade(requestHandler, upStreamMgr) {
-        return async (rawReq, socket, head) => {
+    function buildOnUpgrade(proxyHandler) {
+        return async (req, socket, head) => {
 
             try {
 
-                const req = new UpgradeRequest(upStreamMgr, rawReq, socket, head)
+                const proxyReq = proxyHandler.buildProxyReq(req)
 
-                await requestHandler.handleRequest(req)
+                // 统一通过 NetSocket 开启远端的 tcp/(tls?) 链接
+                const remoteSocket = new NetSocket()
 
-                if (!req.accepted) {
-                    let remoteSocket = await upStreamMgr.connect(
-                        req.port,
-                        req.hostname,
-                        req.href,
-                        req.headers[`user-agent`],
-                    )
-                    if (req.secure) {
-                        remoteSocket = new TLSSocket(remoteSocket)
-                    }
+                remoteSocket.connect(proxyReq.port, proxyReq.hostname, {
+                    rejectUnauthorized: false,
+                })
 
-                    socket.once(`error`, () => remoteSocket.destroy())
-                    remoteSocket.once(`error`, () => socket.destroy())
+                socket.once(`error`, () => remoteSocket.destroy())
+                remoteSocket.once(`error`, () => socket.destroy())
 
-                    remoteSocket.pipe(socket)
-
-                    remoteSocket.write(`${rawReq.method} ${rawReq.url} HTTP/${rawReq.httpVersion}\r\n`)
-                    const len = rawReq.rawHeaders.length
-                    for (let idx = 0; idx < len; ++idx) {
-                        remoteSocket.write(`${rawReq.rawHeaders[idx]}: ${rawReq.rawHeaders[idx + 1]}\r\n`)
-                    }
-                    remoteSocket.write(`\r\n`)
-                    remoteSocket.write(head)
-
-                    socket.pipe(remoteSocket)
+                remoteSocket.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`)
+                const len = req.rawHeaders.length
+                for (let idx = 0; idx < len; idx+=2) {
+                    remoteSocket.write(`${req.rawHeaders[idx]}: ${req.rawHeaders[idx + 1]}\r\n`)
                 }
+                remoteSocket.write(`\r\n`)
+                remoteSocket.write(head)
+                
+                // 实现两个 stream 互相 write data
+                remoteSocket.pipe(socket)
+                socket.pipe(remoteSocket)
 
-            } catch (error) {
+            } catch (err) {
+                console.error(err)
                 socket.destroy()
             }
         }
@@ -167,14 +172,8 @@ module.exports.init = function() {
         return async (rawReq, rawRes) => {
             try {
 
-                // clone req
-                // edit req
-                // if has res, get res
-                // if has no res, dispatch req, get res
-                // finally pipe res
-
-                const proxyReq = proxyHandler.buildReq(rawReq)
-                const proxyRes = await proxyHandler.dispatch(proxyReq)
+                const proxyReq = proxyHandler.buildProxyReq(rawReq)
+                const proxyRes = await proxyHandler.dispatchProxyReq(proxyReq)
 
                 const statusCode = proxyRes.statusCode || proxyRes.status || 200
 
@@ -205,16 +204,6 @@ module.exports.init = function() {
                 }
             }
         }
-    }
-
-    function getURL(req) {
-        const parsedURL = url.parse(req.url)
-        return url.format({
-            protocol: req.socket.encrypted ? `https:` : `http:`,
-            host: req.headers.host,
-            pathname: parsedURL.pathname,
-            search: parsedURL.search,
-        })
     }
 
     return {

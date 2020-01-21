@@ -16,15 +16,31 @@ const commonOpts = {
     }
 }
 
-const DefaultProxyOpts = {
-    proxy: 'http://localhost:8123',
+const ProxyHost = `localhost`
+const ProxyPort = 8123
+const SecureProxyPort = 443
+
+function buildProxy(url) {
+    let proxyOpt
+    if (/^http:\/\//.test(url)) {
+        proxyOpt = {
+            proxy: `http://${ProxyHost}:${ProxyPort}`,
+        }
+    } else {
+        proxyOpt = {
+            proxy: `http://${ProxyHost}:${ProxyPort}`,
+            rejectUnauthorized: false,
+        }
+    }
+    return proxyOpt
 }
 
 async function get(url, data = {}, useProxy = false) {
     let proxyOpt = {}
     if (useProxy) {
-        proxyOpt = DefaultProxyOpts
+        proxyOpt = buildProxy(url)
     }
+
     return await rq.get(url, {
         ...commonOpts,
         ...proxyOpt,
@@ -35,7 +51,7 @@ async function get(url, data = {}, useProxy = false) {
 async function post(url, data = {}, useProxy = false) {
     let proxyOpt = {}
     if (useProxy) {
-        proxyOpt = DefaultProxyOpts
+        proxyOpt = buildProxy(url)
     }
     return await rq.post(url, {
         ...commonOpts,
