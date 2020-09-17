@@ -7,7 +7,7 @@
     "event-to-promise": "^0.8.0",
     "fs-extra": "^8.1.0",
     "mkdirp": "^0.5.1",
-    "node-forge": "^0.9.1",
+    "node-forge": "^0.10.0",
     "request": "^2.88.0",
     "request-promise": "^4.2.5"
   },
